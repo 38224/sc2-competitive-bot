@@ -29,6 +29,8 @@ class RushBarracks(BotAI):
         global firstDepotSet
         global didBuildFirstOrbital
         global gameStage
+        logger.level("INFO")
+        logger.info("gameState: " + str(gameStage))
         cc : Unit = self.townhalls.first
 
         barracks: Units = self.structures.of_type(UnitTypeId.BARRACKS)
@@ -68,8 +70,7 @@ class RushBarracks(BotAI):
         # Build barracks
         await self.buildFirstBarrack(cc,depots,barracks_placement_position)
 
-        # upgrade barracks & future manage them
-        
+        # upgrade barracks & future manage them 
         if(gameStage == 0):
             sp: Unit
             for sp in self.structures(UnitTypeId.BARRACKS).ready:
@@ -80,7 +81,8 @@ class RushBarracks(BotAI):
 
         if(self.units(UnitTypeId.MARINE).amount > 9):
             marines = self.units(UnitTypeId.MARINE)
-            marines.attack(self.enemy_start_locations[0])
+            for marine in marines:
+                marine.attack(self.enemy_start_locations[0])
  
 ############################################### IDLE STUFF start ##################################################
     async def on_building_construction_started(self, unit: Unit):
@@ -103,13 +105,17 @@ class RushBarracks(BotAI):
                     break
 
     async def buildSCV(self,gasWanted):
+        logger.debug("buildSCV - called")
         cc = self.townhalls.ready.random
         if ( self.can_afford(UnitTypeId.SCV) and cc.is_idle and self.workers.amount < self.townhalls.amount * (19 + (3*gasWanted))):
             cc.train(UnitTypeId.SCV)
 
     async def buildDepos(self,cc):
+        logger.debug("buildDepos - called")
+        if(gameStage == 0):
+            return
         if ( self.supply_left < 3 and self.already_pending(UnitTypeId.SUPPLYDEPOT) == 0 and self.can_afford(UnitTypeId.SUPPLYDEPOT)):
-            await self.build(UnitTypeId.BARRACKS, near=cc.position.towards(self.game_info.map_center, 8))
+            await self.build(UnitTypeId.SUPPLYDEPOT, near=cc.position.towards(self.game_info.map_center, 8))
             
     async def saturateRefinaries(self):
         for refinery in self.gas_buildings:
@@ -118,20 +124,17 @@ class RushBarracks(BotAI):
                 if worker:
                     worker.random.gather(refinery)
 
-    # async def buildBarrack2(self,worker,barracks_placement_position):
-    #     cc = self.townhalls.ready.random
-    #     pos = cc.position.towards(self.enemy_start_locations[0],10)
-    #     if ( self.already_pending(UnitTypeId.BARRACKS) == 0 and self.can_afford(UnitTypeId.BARRACKS)):
-    #         #await self.build(GameInfo.barracks_in_middle)
-    #         worker.build(UnitTypeId.BARRACKS, barracks_placement_position)
-    #         #await self.build(UnitTypeId.BARRACKS, near = pos)
 
     async def buildMarines(self,barracks):
         for barrack in barracks.ready:
+            if(not barrack.has_add_on and self.can_afford(UnitTypeId.BARRACKSREACTOR)):
+                barrack.build(UnitTypeId.BARRACKSREACTOR)
             if(self.can_afford(UnitTypeId.MARINE) and barrack.is_idle and barrack.has_add_on):
+                barrack.train(UnitTypeId.MARINE)
                 barrack.train(UnitTypeId.MARINE)
 
     async def buildBarrack(self,cc):
+        logger.debug("buildBarrack - called")
         if(gameStage != 1):
             return
         if (self.can_afford(UnitTypeId.BARRACKS) and self.structures(UnitTypeId.BARRACKS).amount < 3):
@@ -145,6 +148,8 @@ class RushBarracks(BotAI):
 
 
     async def buildOrbitalOnMain(self):
+        if(gameStage != 0):
+            return
         orbital_tech_requirement: float = self.tech_requirement_progress(UnitTypeId.ORBITALCOMMAND)
         if orbital_tech_requirement == 1:
             # Loop over all idle command centers (CCs that are not building SCVs or morphing to orbital)
@@ -155,6 +160,9 @@ class RushBarracks(BotAI):
                     didBuildFirstOrbital = 1
 
     async def buildFirstBarrack(self,cc,depots,barracks_placement_position):
+        logger.debug("buildFirstBarrack - called")
+        if(gameStage != 0):
+            return
         if(self.structures(UnitTypeId.BARRACKS).amount > 0 or self.already_pending(UnitTypeId.BARRACKS) > 0):
             return
         if depots.ready and self.can_afford(UnitTypeId.BARRACKS):
@@ -164,6 +172,8 @@ class RushBarracks(BotAI):
                 worker.build(UnitTypeId.BARRACKS, barracks_placement_position)
 
     async def buildFirstDepos(self,cc,depots,depot_placement_positions):
+        if(gameStage != 0):
+            return
         #logger.info("---------------- corners:" + str(len(depot_placement_positions)) +  " depos: " + str(len(depots)))
         if self.can_afford(UnitTypeId.SUPPLYDEPOT) and self.already_pending(UnitTypeId.SUPPLYDEPOT) == 0:
             if len(depot_placement_positions) == 0:
@@ -191,7 +201,7 @@ class RushBarracks(BotAI):
                 if worker and self.can_afford(UnitTypeId.COMMANDCENTER):
                     # The worker will be commanded to build the command center
                     worker.build(UnitTypeId.COMMANDCENTER, location)
-
+#build marine before reactor, after 3 rack, rush racks, only builds 1 marine
 _map = random.choice(
     [
         # Most maps have 2 upper points at the ramp (len(self.main_base_ramp.upper) == 2)
@@ -209,7 +219,8 @@ _map = random.choice(
 )
 run_game(
     #maps.get("HonorgroundsLE"),
-    maps.get(_map),
+    maps.get("ParaSiteLE"),
+    #maps.get(_map),
     [Bot(Race.Terran, RushBarracks()), Computer(Race.Zerg, Difficulty.Hard)],
     realtime=True,
     # sc2_version="4.10.1",
