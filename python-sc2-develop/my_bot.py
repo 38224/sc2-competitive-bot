@@ -16,7 +16,8 @@ from typing import FrozenSet, Set
 from loguru import logger
 import random  
 import numpy as np  
-from sc2.ids.ability_id import AbilityId  
+from sc2.ids.ability_id import AbilityId
+from typing import List, Tuple
 
 
 firstDepotSet = 0
@@ -30,7 +31,8 @@ class RushBarracks(BotAI):
         global didBuildFirstOrbital
         global gameStage
         logger.level("INFO")
-        logger.info("gameState: " + str(gameStage))
+        if(iteration %50 == 0):
+            logger.info("gameState: " + str(gameStage))
         cc : Unit = self.townhalls.first
 
         barracks: Units = self.structures.of_type(UnitTypeId.BARRACKS)
@@ -41,11 +43,13 @@ class RushBarracks(BotAI):
         await self.buildSCV(gasWanted = 1)
         await self.saturateRefinaries()
         await self.controlDepos()
-        await self.buildDepos(cc)
+        await self.buildDepos(cc, rushLevel = 2)
 
         await self.buildBarrack(cc)
         await self.buildMarines(barracks)
         await self.destributeAllWorkers()
+        await self.upgradeBarracks(barracks)
+        await self.landBarracks()
         ###################################################################################################################
         depot_placement_positions: FrozenSet[Point2] = self.main_base_ramp.corner_depots
         barracks_placement_position: Point2 = self.main_base_ramp.barracks_correct_placement
@@ -79,10 +83,16 @@ class RushBarracks(BotAI):
                     await self.chat_send("generic build starting...")
                     gameStage = 1
 
+
+        marines = self.units(UnitTypeId.MARINE)
         if(self.units(UnitTypeId.MARINE).amount > 9):
-            marines = self.units(UnitTypeId.MARINE)
+            await self.microMarines(marines,cc)
+        else:
             for marine in marines:
-                marine.attack(self.enemy_start_locations[0])
+                marine.move(cc)
+        #for barrack in barracks.idle:
+        #    if self.can_afford(UnitTypeId.BARRACKSTECHLABRESEARCH_STIMPACK):
+        #        barrack(AbilityId.BARRACKSTECHLABRESEARCH_STIMPACK)
  
 ############################################### IDLE STUFF start ##################################################
     async def on_building_construction_started(self, unit: Unit):
@@ -110,12 +120,12 @@ class RushBarracks(BotAI):
         if ( self.can_afford(UnitTypeId.SCV) and cc.is_idle and self.workers.amount < self.townhalls.amount * (19 + (3*gasWanted))):
             cc.train(UnitTypeId.SCV)
 
-    async def buildDepos(self,cc):
+    async def buildDepos(self,cc,rushLevel = 1):
         logger.debug("buildDepos - called")
         if(gameStage == 0):
             return
-        if ( self.supply_left < 3 and self.already_pending(UnitTypeId.SUPPLYDEPOT) == 0 and self.can_afford(UnitTypeId.SUPPLYDEPOT)):
-            await self.build(UnitTypeId.SUPPLYDEPOT, near=cc.position.towards(self.game_info.map_center, 8))
+        if ( self.supply_left < (3*rushLevel) and self.already_pending(UnitTypeId.SUPPLYDEPOT) == 0 and self.can_afford(UnitTypeId.SUPPLYDEPOT)):
+                await self.build(UnitTypeId.SUPPLYDEPOT, near=cc.position.towards(self.game_info.map_center, 8))
             
     async def saturateRefinaries(self):
         for refinery in self.gas_buildings:
@@ -125,13 +135,46 @@ class RushBarracks(BotAI):
                     worker.random.gather(refinery)
 
 
+    async def upgradeBarracks(self,barracks):
+        if(gameStage == 0):
+            return
+        for barrack in barracks.ready:
+            if(not barrack.has_add_on and self.can_afford(UnitTypeId.BARRACKSTECHLAB)):
+                sp: Unit
+                for sp in self.structures(UnitTypeId.BARRACKS).ready.idle:
+                    if not sp.has_add_on and self.can_afford(UnitTypeId.BARRACKSTECHLAB):
+                        addon_points = self.barrack_points_to_build_addon(sp.position)
+                        if all(self.in_map_bounds(addon_point) and self.in_placement_grid(addon_point) and self.in_pathing_grid(addon_point) for addon_point in addon_points):
+                            sp.build(UnitTypeId.BARRACKSTECHLAB)
+                        else:
+                            sp(AbilityId.LIFT)
+
     async def buildMarines(self,barracks):
         for barrack in barracks.ready:
-            if(not barrack.has_add_on and self.can_afford(UnitTypeId.BARRACKSREACTOR)):
-                barrack.build(UnitTypeId.BARRACKSREACTOR)
             if(self.can_afford(UnitTypeId.MARINE) and barrack.is_idle and barrack.has_add_on):
                 barrack.train(UnitTypeId.MARINE)
                 barrack.train(UnitTypeId.MARINE)
+
+    async def barrack_land_positions(self,sp_position: Point2) -> List[Point2]:
+            land_positions = [(sp_position + Point2((x, y))).rounded for x in range(-1, 2) for y in range(-1, 2)]
+            return land_positions + self.barrack_points_to_build_addon(sp_position)
+
+    async def landBarracks(self):
+        for sp in self.structures(UnitTypeId.BARRACKSFLYING).idle:
+            possible_land_positions_offset = sorted(
+                (Point2((x, y)) for x in range(-10, 10) for y in range(-10, 10)),
+                key=lambda point: point.x**2 + point.y**2,
+            )
+            offset_point: Point2 = Point2((-0.5, -0.5))
+            possible_land_positions = (sp.position.rounded + offset_point + p for p in possible_land_positions_offset)
+            for target_land_position in possible_land_positions:
+                land_and_addon_points: List[Point2] = await self.barrack_land_positions(target_land_position)
+                if all(
+                    self.in_map_bounds(land_pos) and self.in_placement_grid(land_pos)
+                    and self.in_pathing_grid(land_pos) for land_pos in land_and_addon_points
+                ):
+                    sp(AbilityId.LAND, target_land_position)
+                    break
 
     async def buildBarrack(self,cc):
         logger.debug("buildBarrack - called")
@@ -143,8 +186,22 @@ class RushBarracks(BotAI):
     async def destributeAllWorkers(self):
         if(gameStage > 0):
             self.distribute_workers()
-############################################# IDLE STUFF end #######################################
 
+    async def microMarines(self,marines,cc):
+        enemy_location = self.enemy_start_locations[0]
+        for marine in marines:
+            if(marine.weapon_cooldown == 0):
+                marine.attack(enemy_location)
+            else:
+                marine.move(cc)
+############################################# IDLE STUFF end #######################################
+    def barrack_points_to_build_addon(self,sp_position: Point2) -> List[Point2]:
+        addon_offset: Point2 = Point2((2.5, -0.5))
+        addon_position: Point2 = sp_position + addon_offset
+        addon_points = [
+            (addon_position + Point2((x - 0.5, y - 0.5))).rounded for x in range(0, 2) for y in range(0, 2)
+        ]
+        return addon_points
 
 
     async def buildOrbitalOnMain(self):
