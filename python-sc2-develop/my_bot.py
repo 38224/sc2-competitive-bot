@@ -18,11 +18,14 @@ import random
 import numpy as np  
 from sc2.ids.ability_id import AbilityId
 from typing import List, Tuple
-
+from sc2.ids.upgrade_id import UpgradeId
+from sc2.ids.buff_id import BuffId
+from typing import Union
 
 firstDepotSet = 0
 didBuildFirstOrbital = 0
 gameStage = 0 # 0 = first wall, 1= 3 racks,upgrades,units , 2 = more racks & medivacs
+ 
 
 class RushBarracks(BotAI):
      
@@ -30,6 +33,8 @@ class RushBarracks(BotAI):
         global firstDepotSet
         global didBuildFirstOrbital
         global gameStage
+        self.upgradesDone = 0
+        
         logger.level("INFO")
         if(iteration %50 == 0):
             logger.info("gameState: " + str(gameStage))
@@ -47,9 +52,13 @@ class RushBarracks(BotAI):
 
         await self.buildBarrack(cc)
         await self.buildMarines(barracks)
+        
+        await self.distribute_workers()
         await self.destributeAllWorkers()
-        await self.upgradeBarracks(barracks)
+        await self.buildBarracksAddons(barracks)
         await self.landBarracks()
+        await self.researchBarracksUpgrades()
+
         ###################################################################################################################
         depot_placement_positions: FrozenSet[Point2] = self.main_base_ramp.corner_depots
         barracks_placement_position: Point2 = self.main_base_ramp.barracks_correct_placement
@@ -84,15 +93,15 @@ class RushBarracks(BotAI):
                     gameStage = 1
 
 
-        marines = self.units(UnitTypeId.MARINE)
-        if(self.units(UnitTypeId.MARINE).amount > 9):
+        marines = self.units({UnitTypeId.MARINE, UnitTypeId.MARAUDER})
+        if(self.units({UnitTypeId.MARINE, UnitTypeId.MARAUDER}).amount > 19):
             await self.microMarines(marines,cc)
+            await self.useStimPack2()
         else:
             for marine in marines:
                 marine.move(cc)
-        #for barrack in barracks.idle:
-        #    if self.can_afford(UnitTypeId.BARRACKSTECHLABRESEARCH_STIMPACK):
-        #        barrack(AbilityId.BARRACKSTECHLABRESEARCH_STIMPACK)
+
+
  
 ############################################### IDLE STUFF start ##################################################
     async def on_building_construction_started(self, unit: Unit):
@@ -117,14 +126,16 @@ class RushBarracks(BotAI):
     async def buildSCV(self,gasWanted):
         logger.debug("buildSCV - called")
         cc = self.townhalls.ready.random
-        if ( self.can_afford(UnitTypeId.SCV) and cc.is_idle and self.workers.amount < self.townhalls.amount * (19 + (3*gasWanted))):
+        if ( self.can_afford(UnitTypeId.SCV) and cc.is_idle and self.workers.amount < self.townhalls.amount * (16 + (3*gasWanted))):
             cc.train(UnitTypeId.SCV)
 
     async def buildDepos(self,cc,rushLevel = 1):
         logger.debug("buildDepos - called")
         if(gameStage == 0):
             return
-        if ( self.supply_left < (3*rushLevel) and self.already_pending(UnitTypeId.SUPPLYDEPOT) == 0 and self.can_afford(UnitTypeId.SUPPLYDEPOT)):
+        if ( self.supply_left < 3 and self.already_pending(UnitTypeId.SUPPLYDEPOT) == 0 and self.can_afford(UnitTypeId.SUPPLYDEPOT)):
+                await self.build(UnitTypeId.SUPPLYDEPOT, near=cc.position.towards(self.game_info.map_center, 8))
+        if ( self.supply_left < (3*rushLevel) and self.already_pending(UnitTypeId.SUPPLYDEPOT) <2 and self.can_afford(UnitTypeId.SUPPLYDEPOT)):
                 await self.build(UnitTypeId.SUPPLYDEPOT, near=cc.position.towards(self.game_info.map_center, 8))
             
     async def saturateRefinaries(self):
@@ -135,7 +146,8 @@ class RushBarracks(BotAI):
                     worker.random.gather(refinery)
 
 
-    async def upgradeBarracks(self,barracks):
+    async def buildBarracksAddons(self,barracks):
+       
         if(gameStage == 0):
             return
         for barrack in barracks.ready:
@@ -148,12 +160,6 @@ class RushBarracks(BotAI):
                             sp.build(UnitTypeId.BARRACKSTECHLAB)
                         else:
                             sp(AbilityId.LIFT)
-
-    async def buildMarines(self,barracks):
-        for barrack in barracks.ready:
-            if(self.can_afford(UnitTypeId.MARINE) and barrack.is_idle and barrack.has_add_on):
-                barrack.train(UnitTypeId.MARINE)
-                barrack.train(UnitTypeId.MARINE)
 
     async def barrack_land_positions(self,sp_position: Point2) -> List[Point2]:
             land_positions = [(sp_position + Point2((x, y))).rounded for x in range(-1, 2) for y in range(-1, 2)]
@@ -185,7 +191,16 @@ class RushBarracks(BotAI):
 
     async def destributeAllWorkers(self):
         if(gameStage > 0):
-            self.distribute_workers()
+            await self.distribute_workers()
+
+    async def buildMarines(self,barracks):
+        for barrack in barracks.ready:
+            if(barrack.has_add_on and barrack.add_on_tag in self.techlab_tags and self.can_afford(UnitTypeId.MARAUDER) and barrack.is_idle):
+                barrack.train(UnitTypeId.MARAUDER)
+            else:
+                if(barrack.has_add_on and barrack.add_on_tag not in self.techlab_tags and self.can_afford(UnitTypeId.MARINE) and barrack.is_idle):
+                    barrack.train(UnitTypeId.MARINE)
+                    barrack.train(UnitTypeId.MARINE)
 
     async def microMarines(self,marines,cc):
         enemy_location = self.enemy_start_locations[0]
@@ -193,8 +208,101 @@ class RushBarracks(BotAI):
             if(marine.weapon_cooldown == 0):
                 marine.attack(enemy_location)
             else:
-                marine.move(cc)
+                if(self.enemy_units.amount > 20):
+                    marine.move(cc)
+
+    async def useStimPack2(self):
+        for unit in self.units({UnitTypeId.MARINE, UnitTypeId.MARAUDER}): 
+            if (self.already_pending_upgrade(UpgradeId.STIMPACK) == 1 and not unit.has_buff(BuffId.STIMPACK) and not unit.has_buff(BuffId.STIMPACKMARAUDER) and unit.health > 60):
+                for enemy in self.enemy_units:# Raise depos when enemies are nearby
+                    if enemy.distance_to(unit) < 15:
+                        unit(AbilityId.EFFECT_STIM_MARINE)
+                        break
+
+    async def useStimPack(self):
+        self.client.game_step = 2
+        for unit in self.units({UnitTypeId.MARINE, UnitTypeId.MARAUDER}): 
+            if self.enemy_units:
+                # attack (or move towards) zerglings / banelings
+                if unit.weapon_cooldown <= self.client.game_step / 2:
+                    enemies_in_range = self.enemy_units.filter(unit.target_in_range)
+                    # attack lowest hp enemy if any enemy is in range
+                    if enemies_in_range:
+                        # Use stimpack
+                        if (
+                            self.already_pending_upgrade(UpgradeId.STIMPACK) == 1
+                            and not unit.has_buff(BuffId.STIMPACK) and unit.health > 10
+                        ):
+                            unit(AbilityId.BARRACKSTECHLABRESEARCH_STIMPACK)
+
+                        # attack baneling first
+                        filtered_enemies_in_range = enemies_in_range.of_type(UnitTypeId.BANELING)
+
+                        if not filtered_enemies_in_range:
+                            filtered_enemies_in_range = enemies_in_range.of_type(UnitTypeId.ZERGLING)
+                        # attack lowest hp unit
+                        lowest_hp_enemy_in_range = min(filtered_enemies_in_range, key=lambda u: u.health)
+                        unit.attack(lowest_hp_enemy_in_range)
+
+                    # no enemy is in attack-range, so give attack command to closest instead
+                    else:
+                        closest_enemy = self.enemy_units.closest_to(unit)
+                        unit.attack(closest_enemy)
+
+                # move away from zergling / banelings
+                else:
+                    stutter_step_positions = self.position_around_unit(unit, distance=4)
+
+                    # filter in pathing grid
+                    stutter_step_positions = {p for p in stutter_step_positions if self.in_pathing_grid(p)}
+
+                    # find position furthest away from enemies and closest to unit
+                    enemies_in_range = self.enemy_units.filter(lambda u: unit.target_in_range(u, -0.5))
+
+                    if stutter_step_positions and enemies_in_range:
+                        retreat_position = max(
+                            stutter_step_positions,
+                            key=lambda x: x.distance_to(enemies_in_range.center) - x.distance_to(unit),
+                        )
+                        unit.move(retreat_position)
+
+                    else:
+                        logger.info(f"No retreat positions detected for unit {unit} at {unit.position.rounded}.")
+    def position_around_unit(
+        self,
+        pos: Union[Unit, Point2, Point3],
+        distance: int = 1,
+        step_size: int = 1,
+        exclude_out_of_bounds: bool = True,
+    ):
+        pos = pos.position.rounded
+        positions = {
+            pos.offset(Point2((x, y)))
+            for x in range(-distance, distance + 1, step_size) for y in range(-distance, distance + 1, step_size)
+            if (x, y) != (0, 0)
+        }
+        # filter positions outside map size
+        if exclude_out_of_bounds:
+            positions = {
+                p
+                for p in positions
+                if 0 <= p[0] < self.game_info.pathing_grid.width and 0 <= p[1] < self.game_info.pathing_grid.height
+            }
+        return positions
 ############################################# IDLE STUFF end #######################################
+    async def researchBarracksUpgrades(self):
+        if(self.upgradesDone == 1):
+            return
+        techLabs : Units = self.structures(UnitTypeId.BARRACKSTECHLAB)
+        for techLab in techLabs.ready.idle:
+            if self.already_pending_upgrade(UpgradeId.STIMPACK) == 0 and self.can_afford(UpgradeId.STIMPACK):
+                logger.info("building STIMPACK ..........")
+                techLab.research(UpgradeId.STIMPACK)
+            if self.already_pending_upgrade(UpgradeId.STIMPACK) > 0 and self.can_afford(UpgradeId.SHIELDWALL):
+                logger.info("building combat shield ..........")
+                techLab.research(UpgradeId.SHIELDWALL)
+                self.upgradesDone = 1
+
     def barrack_points_to_build_addon(self,sp_position: Point2) -> List[Point2]:
         addon_offset: Point2 = Point2((2.5, -0.5))
         addon_position: Point2 = sp_position + addon_offset
@@ -278,8 +386,8 @@ run_game(
     #maps.get("HonorgroundsLE"),
     maps.get("ParaSiteLE"),
     #maps.get(_map),
-    [Bot(Race.Terran, RushBarracks()), Computer(Race.Zerg, Difficulty.Hard)],
-    realtime=True,
+    [Bot(Race.Terran, RushBarracks()), Computer(Race.Zerg, Difficulty.VeryHard)],
+    realtime=False,
     # sc2_version="4.10.1",
 )
 
